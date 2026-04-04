@@ -172,15 +172,24 @@ def webhook():
                     """, (trade_id,))
                     exec_log(f"BE MOVE {trade_id}")
 
-            if not t["tp1_hit"]:
-                if (t["direction"] == "long" and price >= t["tp1_price"]) or \
-                   (t["direction"] == "short" and price <= t["tp1_price"]):
+           if not t["tp1_hit"]:
+    if (t["direction"] == "long" and price >= t["tp1_price"]) or \
+       (t["direction"] == "short" and price <= t["tp1_price"]):
 
-                    new_size = t["remaining_size"] / 2
-                    cur.execute("""
-                        UPDATE trades SET tp1_hit=TRUE, remaining_size=%s WHERE trade_id=%s
-                    """, (new_size, trade_id))
-                    exec_log(f"TP1 HIT {trade_id}")
+        new_size = t["remaining_size"] / 2
+
+        # RESET STOP BACK TO ORIGINAL STOP
+        original_stop = t["stop_price"]
+
+        cur.execute("""
+            UPDATE trades 
+            SET tp1_hit=TRUE, 
+                remaining_size=%s,
+                current_stop=%s
+            WHERE trade_id=%s
+        """, (new_size, original_stop, trade_id))
+
+        exec_log(f"TP1 HIT + STOP RESET {trade_id} -> {original_stop}")
 
         conn.commit()
         cur.close()
