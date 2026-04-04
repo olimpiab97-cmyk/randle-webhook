@@ -202,6 +202,15 @@ def webhook():
 
     return jsonify({"ok": False})
 
+@app.route("/reset", methods=["POST"])
+def reset():
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM trades;")
+    conn.commit()
+    cur.close()
+    conn.close()
+    return jsonify({"ok": True, "message": "all trades deleted"})
 
 @app.route("/")
 def home():
