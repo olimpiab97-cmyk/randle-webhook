@@ -9,7 +9,7 @@ from psycopg.rows import dict_row
 app = Flask(__name__)
 
 TIMEZONE = "America/Los_Angeles"
-FORCED_EXIT_HOUR = 12
+FORCED_EXIT_HOUR = 0
 MAX_ACTIVE_TRADES = 2
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -190,6 +190,30 @@ def webhook():
                     """, (new_size, original_stop, trade_id))
 
                     exec_log(f"TP1 HIT + STOP RESET {trade_id} -> {original_stop}")
+
+            now = datetime.now(ZoneInfo(TIMEZONE))
+            if now.hour >= FORCED_EXIT_HOUR:
+                now_closed = now.isoformat()
+
+                cur.execute("""
+                    UPDATE trades
+                    SET status=%s,
+                        closed_at=%s,
+                        exit_price=%s,
+                        exit_reason=%s,
+                        remaining_size=%s
+                    WHERE trade_id=%s
+                """, (
+                    "closed",
+                    now_closed,
+                    price,
+                    "forced_exit",
+                    0,
+                    trade_id
+                ))
+
+                exec_log(f"FORCED EXIT {trade_id} @ {price}")
+                continue
 
             stop_hit = (
                 (t["direction"] == "long" and price <= t["current_stop"]) or
