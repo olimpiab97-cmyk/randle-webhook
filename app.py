@@ -9,7 +9,7 @@ from psycopg.rows import dict_row
 app = Flask(__name__)
 
 TIMEZONE = "America/Los_Angeles"
-FORCED_EXIT_HOUR = 0
+FORCED_EXIT_HOUR = 12
 MAX_ACTIVE_TRADES = 2
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
