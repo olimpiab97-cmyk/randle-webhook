@@ -191,6 +191,34 @@ def webhook():
 
                     exec_log(f"TP1 HIT + STOP RESET {trade_id} -> {original_stop}")
 
+            stop_hit = (
+                (t["direction"] == "long" and price <= t["current_stop"]) or
+                (t["direction"] == "short" and price >= t["current_stop"])
+            )
+
+            if stop_hit:
+                now_closed = datetime.now(ZoneInfo(TIMEZONE)).isoformat()
+
+                cur.execute("""
+                    UPDATE trades
+                    SET status=%s,
+                        closed_at=%s,
+                        exit_price=%s,
+                        exit_reason=%s,
+                        remaining_size=%s
+                    WHERE trade_id=%s
+                """, (
+                    "closed",
+                    now_closed,
+                    price,
+                    "stop_hit",
+                    0,
+                    trade_id
+                ))
+
+                exec_log(f"STOP HIT {trade_id} @ {price}")
+                continue
+
         conn.commit()
         cur.close()
         conn.close()
@@ -202,6 +230,7 @@ def webhook():
 
     return jsonify({"ok": False})
 
+
 @app.route("/reset", methods=["POST"])
 def reset():
     conn = get_conn()
@@ -211,6 +240,7 @@ def reset():
     cur.close()
     conn.close()
     return jsonify({"ok": True, "message": "all trades deleted"})
+
 
 @app.route("/")
 def home():
