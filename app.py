@@ -12,7 +12,7 @@ TIMEZONE = "America/Los_Angeles"
 FORCED_EXIT_HOUR = 12
 MAX_ACTIVE_TRADES = 2
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///local.db")
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
 
 def exec_log(msg):
@@ -196,15 +196,28 @@ def webhook():
 
 @app.route("/")
 def home():
+    active_count = 0
+    try:
+        active_count = len(fetch_active_trades()) if DATABASE_URL else 0
+    except Exception as e:
+        print(f"[HOME ERROR] {e}")
+
     return jsonify({
         "ok": True,
         "message": "Webhook server is live",
-        "active_trade_count": len(fetch_active_trades())
+        "db_configured": bool(DATABASE_URL),
+        "active_trade_count": active_count
     })
 
 
-# Make sure the table exists when the app starts on Render/Gunicorn
-init_db()
+if DATABASE_URL:
+    try:
+        init_db()
+        print("[STARTUP] init_db succeeded")
+    except Exception as e:
+        print(f"[STARTUP ERROR] {e}")
+else:
+    print("[STARTUP] DATABASE_URL not set - skipping init_db()")
 
 
 if __name__ == "__main__":
