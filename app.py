@@ -3,8 +3,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 import uuid
 import os
-import psycopg2
-from psycopg2.extras import RealDictCursor
+import psycopg
 
 app = Flask(__name__)
 
@@ -20,9 +19,7 @@ def exec_log(msg):
 
 
 def get_conn():
-    if not DATABASE_URL:
-        raise RuntimeError("DATABASE_URL is not set")
-    return psycopg2.connect(DATABASE_URL)
+    return psycopg.connect(DATABASE_URL)
 
 
 def init_db():
@@ -251,7 +248,7 @@ def webhook():
         exited = []
 
         conn = get_conn()
-        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur = conn.cursor(row_factory=psycopg.rows.dict_row)
         cur.execute("SELECT * FROM trades WHERE status = 'active' ORDER BY created_at ASC;")
         active_rows = cur.fetchall()
 
