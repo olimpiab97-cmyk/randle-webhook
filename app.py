@@ -12,7 +12,7 @@ TIMEZONE = "America/Los_Angeles"
 FORCED_EXIT_HOUR = 12
 MAX_ACTIVE_TRADES = 2
 
-DATABASE_URL = os.environ.get("DATABASE_URL")
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///local.db")
 
 
 def exec_log(msg):
