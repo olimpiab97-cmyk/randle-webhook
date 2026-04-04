@@ -2,18 +2,35 @@ from flask import Flask, request, jsonify
 from datetime import datetime
 from zoneinfo import ZoneInfo
 import uuid
+import json
+import os
 
 app = Flask(__name__)
 
 TIMEZONE = "America/Los_Angeles"
 FORCED_EXIT_HOUR = 12
 MAX_ACTIVE_TRADES = 2
+DATA_FILE = "trades.json"
 
 trades = {}
 
 
 def exec_log(msg):
     print(f"[EXECUTION] {msg}")
+
+
+def load_trades():
+    global trades
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, "r") as f:
+            trades = json.load(f)
+    else:
+        trades = {}
+
+
+def save_trades():
+    with open(DATA_FILE, "w") as f:
+        json.dump(trades, f, indent=2)
 
 
 def calc_levels(direction, entry, stop):
@@ -41,6 +58,9 @@ def validate_trade(direction, entry, stop):
 
 def get_active_trades():
     return {tid: t for tid, t in trades.items() if t["status"] == "active"}
+
+
+load_trades()
 
 
 @app.route("/webhook", methods=["POST"])
@@ -86,6 +106,8 @@ def webhook():
             "created_at": datetime.now(ZoneInfo(TIMEZONE)).isoformat()
         }
 
+        save_trades()
+
         exec_log(f"ENTER {symbol} {direction} id={trade_id} size={size} entry={entry} stop={stop}")
         exec_log(f"PLACE TP1 id={trade_id} at {tp1} (half)")
 
@@ -99,7 +121,6 @@ def webhook():
             if trade["status"] != "active":
                 continue
 
-            # MOVE TO BE
             if not trade["moved_to_be"]:
                 if trade["direction"] == "long" and price >= trade["be_trigger"]:
                     trade["current_stop"] = trade["entry_price"]
@@ -113,7 +134,6 @@ def webhook():
                     exec_log(f"MOVE STOP TO BE id={trade_id} @ {trade['current_stop']}")
                     updated.append(trade_id)
 
-            # TP1
             if not trade["tp1_hit"]:
                 if trade["direction"] == "long" and price >= trade["tp1_price"]:
                     trade["tp1_hit"] = True
@@ -129,6 +149,7 @@ def webhook():
                     exec_log(f"TP1 HIT id={trade_id} @ {trade['tp1_price']} | closed {qty}")
                     updated.append(trade_id)
 
+        save_trades()
         return jsonify({"ok": True, "updated_trades": updated, "trades": trades})
 
     if event == "time_check":
@@ -142,12 +163,15 @@ def webhook():
             if now.hour >= FORCED_EXIT_HOUR and trade["remaining_size"] > 0:
                 exec_log(f"FORCED EXIT id={trade_id} @ {now.isoformat()}")
                 trade["status"] = "closed"
+                trade["closed_at"] = now.isoformat()
+                trade["exit_reason"] = "forced_time_exit"
+                trade["exit_price"] = None
                 trade["remaining_size"] = 0
                 exited.append(trade_id)
 
+        save_trades()
         return jsonify({"ok": True, "exited_trades": exited, "trades": trades})
 
-    # ✅ NEW EXIT LOGIC (CORRECTLY INSERTED)
     if event == "exit":
         trade_id = data.get("trade_id")
         exit_price = data.get("exit_price")
@@ -169,6 +193,8 @@ def webhook():
         trade["exit_reason"] = reason
         trade["closed_at"] = datetime.now(ZoneInfo(TIMEZONE)).isoformat()
         trade["remaining_size"] = 0
+
+        save_trades()
 
         exec_log(f"EXIT {trade['symbol']} id={trade_id} @ {exit_price} reason={reason}")
 
