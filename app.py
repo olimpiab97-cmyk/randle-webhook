@@ -99,6 +99,7 @@ def webhook():
             if trade["status"] != "active":
                 continue
 
+            # MOVE TO BE
             if not trade["moved_to_be"]:
                 if trade["direction"] == "long" and price >= trade["be_trigger"]:
                     trade["current_stop"] = trade["entry_price"]
@@ -112,6 +113,7 @@ def webhook():
                     exec_log(f"MOVE STOP TO BE id={trade_id} @ {trade['current_stop']}")
                     updated.append(trade_id)
 
+            # TP1
             if not trade["tp1_hit"]:
                 if trade["direction"] == "long" and price >= trade["tp1_price"]:
                     trade["tp1_hit"] = True
@@ -145,6 +147,37 @@ def webhook():
 
         return jsonify({"ok": True, "exited_trades": exited, "trades": trades})
 
+    # ✅ NEW EXIT LOGIC (CORRECTLY INSERTED)
+    if event == "exit":
+        trade_id = data.get("trade_id")
+        exit_price = data.get("exit_price")
+        reason = data.get("reason", "manual_exit")
+
+        if not trade_id:
+            return jsonify({"ok": False, "msg": "missing trade_id"})
+
+        if trade_id not in trades:
+            return jsonify({"ok": False, "msg": "trade_id not found"})
+
+        trade = trades[trade_id]
+
+        if trade["status"] != "active":
+            return jsonify({"ok": False, "msg": "trade already closed"})
+
+        trade["status"] = "closed"
+        trade["exit_price"] = float(exit_price) if exit_price is not None else None
+        trade["exit_reason"] = reason
+        trade["closed_at"] = datetime.now(ZoneInfo(TIMEZONE)).isoformat()
+        trade["remaining_size"] = 0
+
+        exec_log(f"EXIT {trade['symbol']} id={trade_id} @ {exit_price} reason={reason}")
+
+        return jsonify({
+            "ok": True,
+            "msg": "trade closed",
+            "trade": trade
+        })
+
     if event == "state":
         return jsonify({"ok": True, "trades": trades, "active_trades": get_active_trades()})
 
@@ -153,7 +186,11 @@ def webhook():
 
 @app.route("/")
 def home():
-    return jsonify({"ok": True, "message": "Webhook server is live", "active_trade_count": len(get_active_trades())})
+    return jsonify({
+        "ok": True,
+        "message": "Webhook server is live",
+        "active_trade_count": len(get_active_trades())
+    })
 
 
 if __name__ == "__main__":
