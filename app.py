@@ -20,6 +20,8 @@ def exec_log(msg):
 
 
 def get_conn():
+    if not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL is not set")
     return psycopg.connect(DATABASE_URL)
 
 
@@ -108,7 +110,6 @@ def webhook():
     data = request.get_json(force=True)
     event = data.get("event")
 
-    # ================= ENTRY =================
     if event == "entry":
         active = fetch_active_trades()
 
@@ -145,7 +146,6 @@ def webhook():
 
         return jsonify({"ok": True})
 
-    # ================= PRICE =================
     elif event == "price_update":
         price = float(data["price"])
         symbol = data.get("symbol")
@@ -163,7 +163,6 @@ def webhook():
         for t in trades:
             trade_id = t["trade_id"]
 
-            # BE MOVE
             if not t["moved_to_be"]:
                 if (t["direction"] == "long" and price >= t["be_trigger"]) or \
                    (t["direction"] == "short" and price <= t["be_trigger"]):
@@ -173,7 +172,6 @@ def webhook():
                     """, (trade_id,))
                     exec_log(f"BE MOVE {trade_id}")
 
-            # TP1
             if not t["tp1_hit"]:
                 if (t["direction"] == "long" and price >= t["tp1_price"]) or \
                    (t["direction"] == "short" and price <= t["tp1_price"]):
@@ -190,8 +188,24 @@ def webhook():
 
         return jsonify({"ok": True})
 
-    # ================= STATE =================
     elif event == "state":
         return jsonify(fetch_all_trades())
 
     return jsonify({"ok": False})
+
+
+@app.route("/")
+def home():
+    return jsonify({
+        "ok": True,
+        "message": "Webhook server is live",
+        "active_trade_count": len(fetch_active_trades())
+    })
+
+
+# Make sure the table exists when the app starts on Render/Gunicorn
+init_db()
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000, debug=True)
