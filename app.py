@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo
 import uuid
 import os
 import psycopg
+from psycopg.rows import dict_row
 
 app = Flask(__name__)
 
@@ -25,8 +26,7 @@ def get_conn():
 def init_db():
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute(
-        """
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS trades (
             trade_id TEXT PRIMARY KEY,
             symbol TEXT NOT NULL,
@@ -47,8 +47,7 @@ def init_db():
             exit_price DOUBLE PRECISION,
             exit_reason TEXT
         );
-        """
-    )
+    """)
     conn.commit()
     cur.close()
     conn.close()
@@ -71,14 +70,12 @@ def validate_trade(direction, entry, stop):
         return False
     if direction == "short" and stop <= entry:
         return False
-    if abs(entry - stop) <= 0:
-        return False
     return True
 
 
 def fetch_all_trades():
     conn = get_conn()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur = conn.cursor(row_factory=dict_row)
     cur.execute("SELECT * FROM trades ORDER BY created_at ASC;")
     rows = cur.fetchall()
     cur.close()
@@ -88,8 +85,8 @@ def fetch_all_trades():
 
 def fetch_active_trades():
     conn = get_conn()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("SELECT * FROM trades WHERE status = 'active' ORDER BY created_at ASC;")
+    cur = conn.cursor(row_factory=dict_row)
+    cur.execute("SELECT * FROM trades WHERE status = 'active';")
     rows = cur.fetchall()
     cur.close()
     conn.close()
@@ -98,7 +95,7 @@ def fetch_active_trades():
 
 def fetch_trade(trade_id):
     conn = get_conn()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur = conn.cursor(row_factory=dict_row)
     cur.execute("SELECT * FROM trades WHERE trade_id = %s;", (trade_id,))
     row = cur.fetchone()
     cur.close()
@@ -111,11 +108,12 @@ def webhook():
     data = request.get_json(force=True)
     event = data.get("event")
 
+    # ================= ENTRY =================
     if event == "entry":
-        active_trades = fetch_active_trades()
+        active = fetch_active_trades()
 
-        if len(active_trades) >= MAX_ACTIVE_TRADES:
-            return jsonify({"ok": False, "msg": "max active trades reached", "trades": active_trades})
+        if len(active) >= MAX_ACTIVE_TRADES:
+            return jsonify({"ok": False, "msg": "max active trades reached"})
 
         symbol = data["symbol"]
         direction = data["direction"]
@@ -124,7 +122,7 @@ def webhook():
         size = float(data.get("position_size", 2))
 
         if not validate_trade(direction, entry, stop):
-            return jsonify({"ok": False, "msg": "invalid stop placement"})
+            return jsonify({"ok": False, "msg": "invalid stop"})
 
         risk, be, tp1 = calc_levels(direction, entry, stop)
         trade_id = str(uuid.uuid4())
@@ -132,214 +130,68 @@ def webhook():
 
         conn = get_conn()
         cur = conn.cursor()
-        cur.execute(
-            """
-            INSERT INTO trades (
-                trade_id, symbol, direction, entry_price, stop_price, current_stop,
-                risk, be_trigger, tp1_price, position_size, remaining_size,
-                tp1_hit, moved_to_be, status, created_at
-            ) VALUES (
-                %s, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s,
-                %s, %s, %s, %s
-            );
-            """,
-            (
-                trade_id, symbol, direction, entry, stop, stop,
-                risk, be, tp1, size, size,
-                False, False, "active", created_at
-            )
-        )
+        cur.execute("""
+            INSERT INTO trades VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NULL,NULL,NULL)
+        """, (
+            trade_id, symbol, direction, entry, stop, stop,
+            risk, be, tp1, size, size,
+            False, False, "active", created_at
+        ))
         conn.commit()
         cur.close()
         conn.close()
 
-        trade = fetch_trade(trade_id)
+        exec_log(f"ENTER {symbol} {direction}")
 
-        exec_log(f"ENTER {symbol} {direction} id={trade_id} size={size} entry={entry} stop={stop}")
-        exec_log(f"PLACE TP1 id={trade_id} at {tp1} (half)")
+        return jsonify({"ok": True})
 
-        return jsonify({"ok": True, "trade_id": trade_id, "trade": trade})
-
-    if event == "price_update":
+    # ================= PRICE =================
+    elif event == "price_update":
         price = float(data["price"])
-        updated = []
+        symbol = data.get("symbol")
 
         conn = get_conn()
-        cur = conn.cursor(cursor_factory=RealDictCursor)
-        cur.execute("SELECT * FROM trades WHERE status = 'active' ORDER BY created_at ASC;")
-        active_rows = cur.fetchall()
+        cur = conn.cursor(row_factory=dict_row)
 
-        for trade in active_rows:
-            trade_id = trade["trade_id"]
-            changed = False
+        if symbol:
+            cur.execute("SELECT * FROM trades WHERE status='active' AND symbol=%s;", (symbol,))
+        else:
+            cur.execute("SELECT * FROM trades WHERE status='active';")
 
-            if not trade["moved_to_be"]:
-                if trade["direction"] == "long" and price >= trade["be_trigger"]:
-                    cur.execute(
-                        """
-                        UPDATE trades
-                        SET current_stop = entry_price, moved_to_be = TRUE
-                        WHERE trade_id = %s;
-                        """,
-                        (trade_id,)
-                    )
-                    exec_log(f"MOVE STOP TO BE id={trade_id} @ {trade['entry_price']}")
-                    updated.append(trade_id)
-                    changed = True
+        trades = cur.fetchall()
 
-                elif trade["direction"] == "short" and price <= trade["be_trigger"]:
-                    cur.execute(
-                        """
-                        UPDATE trades
-                        SET current_stop = entry_price, moved_to_be = TRUE
-                        WHERE trade_id = %s;
-                        """,
-                        (trade_id,)
-                    )
-                    exec_log(f"MOVE STOP TO BE id={trade_id} @ {trade['entry_price']}")
-                    updated.append(trade_id)
-                    changed = True
+        for t in trades:
+            trade_id = t["trade_id"]
 
-            if not trade["tp1_hit"]:
-                if trade["direction"] == "long" and price >= trade["tp1_price"]:
-                    qty = trade["position_size"] / 2
-                    new_remaining = trade["remaining_size"] - qty
-                    cur.execute(
-                        """
-                        UPDATE trades
-                        SET tp1_hit = TRUE, remaining_size = %s
-                        WHERE trade_id = %s;
-                        """,
-                        (new_remaining, trade_id)
-                    )
-                    exec_log(f"TP1 HIT id={trade_id} @ {trade['tp1_price']} | closed {qty}")
-                    if trade_id not in updated:
-                        updated.append(trade_id)
-                    changed = True
+            # BE MOVE
+            if not t["moved_to_be"]:
+                if (t["direction"] == "long" and price >= t["be_trigger"]) or \
+                   (t["direction"] == "short" and price <= t["be_trigger"]):
 
-                elif trade["direction"] == "short" and price <= trade["tp1_price"]:
-                    qty = trade["position_size"] / 2
-                    new_remaining = trade["remaining_size"] - qty
-                    cur.execute(
-                        """
-                        UPDATE trades
-                        SET tp1_hit = TRUE, remaining_size = %s
-                        WHERE trade_id = %s;
-                        """,
-                        (new_remaining, trade_id)
-                    )
-                    exec_log(f"TP1 HIT id={trade_id} @ {trade['tp1_price']} | closed {qty}")
-                    if trade_id not in updated:
-                        updated.append(trade_id)
-                    changed = True
+                    cur.execute("""
+                        UPDATE trades SET current_stop=entry_price, moved_to_be=TRUE WHERE trade_id=%s
+                    """, (trade_id,))
+                    exec_log(f"BE MOVE {trade_id}")
 
-            if changed:
-                pass
+            # TP1
+            if not t["tp1_hit"]:
+                if (t["direction"] == "long" and price >= t["tp1_price"]) or \
+                   (t["direction"] == "short" and price <= t["tp1_price"]):
+
+                    new_size = t["remaining_size"] / 2
+                    cur.execute("""
+                        UPDATE trades SET tp1_hit=TRUE, remaining_size=%s WHERE trade_id=%s
+                    """, (new_size, trade_id))
+                    exec_log(f"TP1 HIT {trade_id}")
 
         conn.commit()
         cur.close()
         conn.close()
 
-        return jsonify({"ok": True, "updated_trades": updated, "trades": fetch_all_trades()})
+        return jsonify({"ok": True})
 
-    if event == "time_check":
-        now = datetime.now(ZoneInfo(TIMEZONE))
-        exited = []
+    # ================= STATE =================
+    elif event == "state":
+        return jsonify(fetch_all_trades())
 
-        conn = get_conn()
-        cur = conn.cursor(row_factory=psycopg.rows.dict_row)
-        cur.execute("SELECT * FROM trades WHERE status = 'active' ORDER BY created_at ASC;")
-        active_rows = cur.fetchall()
-
-        for trade in active_rows:
-            trade_id = trade["trade_id"]
-            if now.hour >= FORCED_EXIT_HOUR and trade["remaining_size"] > 0:
-                cur.execute(
-                    """
-                    UPDATE trades
-                    SET status = 'closed',
-                        closed_at = %s,
-                        exit_reason = %s,
-                        exit_price = %s,
-                        remaining_size = 0
-                    WHERE trade_id = %s;
-                    """,
-                    (now.isoformat(), "forced_time_exit", None, trade_id)
-                )
-                exec_log(f"FORCED EXIT id={trade_id} @ {now.isoformat()}")
-                exited.append(trade_id)
-
-        conn.commit()
-        cur.close()
-        conn.close()
-
-        return jsonify({"ok": True, "exited_trades": exited, "trades": fetch_all_trades()})
-
-    if event == "exit":
-        trade_id = data.get("trade_id")
-        exit_price = data.get("exit_price")
-        reason = data.get("reason", "manual_exit")
-
-        if not trade_id:
-            return jsonify({"ok": False, "msg": "missing trade_id"})
-
-        trade = fetch_trade(trade_id)
-        if not trade:
-            return jsonify({"ok": False, "msg": "trade_id not found"})
-
-        if trade["status"] != "active":
-            return jsonify({"ok": False, "msg": "trade already closed"})
-
-        closed_at = datetime.now(ZoneInfo(TIMEZONE)).isoformat()
-
-        conn = get_conn()
-        cur = conn.cursor()
-        cur.execute(
-            """
-            UPDATE trades
-            SET status = 'closed',
-                exit_price = %s,
-                exit_reason = %s,
-                closed_at = %s,
-                remaining_size = 0
-            WHERE trade_id = %s;
-            """,
-            (float(exit_price) if exit_price is not None else None, reason, closed_at, trade_id)
-        )
-        conn.commit()
-        cur.close()
-        conn.close()
-
-        updated_trade = fetch_trade(trade_id)
-
-        exec_log(f"EXIT {updated_trade['symbol']} id={trade_id} @ {exit_price} reason={reason}")
-
-        return jsonify({
-            "ok": True,
-            "msg": "trade closed",
-            "trade": updated_trade
-        })
-
-    if event == "state":
-        return jsonify({
-            "ok": True,
-            "trades": fetch_all_trades(),
-            "active_trades": fetch_active_trades()
-        })
-
-    return jsonify({"ok": False, "msg": "unknown event"})
-
-
-@app.route("/")
-def home():
-    return jsonify({
-        "ok": True,
-        "message": "Webhook server is live",
-        "active_trade_count": len(fetch_active_trades())
-    })
-
-
-if __name__ == "__main__":
-    init_db()
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    return jsonify({"ok": False})
