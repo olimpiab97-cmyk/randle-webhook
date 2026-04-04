@@ -168,28 +168,28 @@ def webhook():
                    (t["direction"] == "short" and price <= t["be_trigger"]):
 
                     cur.execute("""
-                        UPDATE trades SET current_stop=entry_price, moved_to_be=TRUE WHERE trade_id=%s
+                        UPDATE trades
+                        SET current_stop=entry_price, moved_to_be=TRUE
+                        WHERE trade_id=%s
                     """, (trade_id,))
                     exec_log(f"BE MOVE {trade_id}")
 
-           if not t["tp1_hit"]:
-    if (t["direction"] == "long" and price >= t["tp1_price"]) or \
-       (t["direction"] == "short" and price <= t["tp1_price"]):
+            if not t["tp1_hit"]:
+                if (t["direction"] == "long" and price >= t["tp1_price"]) or \
+                   (t["direction"] == "short" and price <= t["tp1_price"]):
 
-        new_size = t["remaining_size"] / 2
+                    new_size = t["remaining_size"] / 2
+                    original_stop = t["stop_price"]
 
-        # RESET STOP BACK TO ORIGINAL STOP
-        original_stop = t["stop_price"]
+                    cur.execute("""
+                        UPDATE trades
+                        SET tp1_hit=TRUE,
+                            remaining_size=%s,
+                            current_stop=%s
+                        WHERE trade_id=%s
+                    """, (new_size, original_stop, trade_id))
 
-        cur.execute("""
-            UPDATE trades 
-            SET tp1_hit=TRUE, 
-                remaining_size=%s,
-                current_stop=%s
-            WHERE trade_id=%s
-        """, (new_size, original_stop, trade_id))
-
-        exec_log(f"TP1 HIT + STOP RESET {trade_id} -> {original_stop}")
+                    exec_log(f"TP1 HIT + STOP RESET {trade_id} -> {original_stop}")
 
         conn.commit()
         cur.close()
